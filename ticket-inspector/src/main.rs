@@ -1,21 +1,51 @@
-use clap::Parser;
 use anyhow::{Context, Result};
 use base32::Alphabet;
-use std::str;
-#[derive(Parser, Debug)]
+use clap::{Parser};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-struct Ticket {
-content: String
+#[derive(Parser, Debug)]
+struct Cli { 
+    ticket: String,
 }
 
+#[derive(Debug)]
+pub struct Ticket {
+    pub version: u8,
+    pub real_node: String,
+    pub ip: IpAddr,
+}
+
+pub fn decode_ticket(cli: &str) -> Result<Ticket> {
+ let bytes = base32::decode(Alphabet::Z,cli).context("Failed to decode ticket")?;
+let version = bytes[0];
+let node_id: [u8; 32] = bytes[1..33].try_into().context("Failed to extract node ID")?;
+let real_node= String::from_utf8(node_id.to_vec()).context("Failed to convert node ID to string")?;
+let ipversion = bytes[33];
+let ip = match ipversion {
+    0x04 => {
+    let octets: [u8; 4] = bytes[34..38].try_into()?;
+            IpAddr::V4(Ipv4Addr::from(octets))
+    }
+    0x06 => {
+      let octets: [u8; 16] = bytes[34..50].try_into()?;
+            IpAddr::V6(Ipv6Addr::from(octets))  
+    }
+    other => Err(anyhow::anyhow!("Unknown IP version: {}", other))?,
+};
+    Ok(Ticket { version, real_node, ip })
+}
 
 fn main() -> Result<()> {
-let cli = Ticket::parse();
-let boundaries = cli.content.floor_char_boundary(52);
-let node = &cli.content[..boundaries];
-let ascii_code = base32::decode(Alphabet::Z, node).context("failed to decode the zbase32")?;
-let nodeu = str::from_utf8(&ascii_code)?;
-println!("Ticket node is {} which is the ip {}", node, nodeu);
+    let cli = Cli::parse();
+    let ticket = decode_ticket(&cli.ticket)?;
 
-Ok (())
+    println!("Version: {}", ticket.version);
+    println!("Real Node: {}", ticket.real_node);
+    println!("IP Address: {}", ticket.ip);
+
+    Ok(())
 }
+
+
+
+
