@@ -1,0 +1,5 @@
+# Dossier de compilation généré par Cargo
+/target
+
+# Fichiers de backup générés par rustfmt (optionnel mais recommandé)
+**/*.rs.bk
