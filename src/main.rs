@@ -1,51 +1,127 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use base32::Alphabet;
-use clap::{Parser};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use clap::{Parser, Subcommand};
+use halo::{Keypair, Publisher, Ticket, decode_ticket, parse_ticket, subscribe};
+use tracing::{Level, event};
+use tracing_subscriber::EnvFilter;
 
-#[derive(Parser, Debug)]
-struct Cli { 
-    ticket: String,
+#[derive(Parser)]
+#[command(name = "halo-cli")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-#[derive(Debug)]
-pub struct Ticket {
-    pub version: u8,
-    pub real_node: String,
-    pub ip: IpAddr,
+#[derive(Subcommand)]
+enum Commands {
+    /// Publish a video from a file, using MoQ
+    Publish { video_path: String },
+
+    /// Subscribe to a MoQ stream using a ticket
+    Subscribe { ticket: String },
+
+    /// Decode and inspect a HALO join ticket
+    Inspect { ticket: String },
 }
 
-pub fn decode_ticket(cli: &str) -> Result<Ticket> {
- let bytes = base32::decode(Alphabet::Z,cli).context("Failed to decode ticket")?;
-let version = bytes[0];
-let node_id: [u8; 32] = bytes[1..33].try_into().context("Failed to extract node ID")?;
-let real_node= String::from_utf8(node_id.to_vec()).context("Failed to convert node ID to string")?;
-let ipversion = bytes[33];
-let ip = match ipversion {
-    0x04 => {
-    let octets: [u8; 4] = bytes[34..38].try_into()?;
-            IpAddr::V4(Ipv4Addr::from(octets))
-    }
-    0x06 => {
-      let octets: [u8; 16] = bytes[34..50].try_into()?;
-            IpAddr::V6(Ipv6Addr::from(octets))  
-    }
-    other => Err(anyhow::anyhow!("Unknown IP version: {}", other))?,
-};
-    Ok(Ticket { version, real_node, ip })
+fn format_ticket(ticket: &Ticket) -> String {
+    let node_id = base32::encode(Alphabet::Z, &ticket.node_id);
+    format!(
+        "Version: {}\nNode ID: {}\nIP Address: {}",
+        ticket.version, node_id, ticket.ip
+    )
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let ticket = decode_ticket(&cli.ticket)?;
 
-    println!("Version: {}", ticket.version);
-    println!("Real Node: {}", ticket.real_node);
-    println!("IP Address: {}", ticket.ip);
+    if let Commands::Inspect { ticket } = cli.command {
+        let decoded = decode_ticket(&ticket)?;
+        println!("{}", format_ticket(&decoded));
+        return Ok(());
+    }
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .init();
+
+    event!(Level::INFO, "starting halo-cli {}", env!("CARGO_PKG_VERSION"));
+
+    let keypair = Keypair::new()?;
+    event!(Level::INFO, "pubkey for this node is {keypair}");
+
+    match cli.command {
+        Commands::Publish { video_path } => {
+            eprintln!("Publishing {video_path}");
+            let publisher = Publisher::bind(&video_path, keypair.node_id())?;
+            eprintln!("Publisher ticket: {}", publisher.ticket());
+            tokio::select! {
+                res = publisher.run() => res?,
+                _ = tokio::signal::ctrl_c() => {}
+            }
+        }
+        Commands::Subscribe { ticket } => {
+            // Printing anything to stdout can corrupt the pipe to ffplay
+            eprintln!("Subscribing to {ticket}");
+            let addr = parse_ticket(&ticket)?;
+            tokio::select! {
+                res = subscribe(addr, tokio::io::stdout()) => res?,
+                _ = tokio::signal::ctrl_c() => {}
+            }
+        }
+        Commands::Inspect { .. } => unreachable!(),
+    }
 
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halo::encode_ticket;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+    #[test]
+    fn parses_subcommands() {
+        let publish = Cli::try_parse_from(["halo-cli", "publish", "video.mp4"]).unwrap();
+        assert!(matches!(
+            publish.command,
+            Commands::Publish { video_path } if video_path == "video.mp4"
+        ));
 
+        let subscribe = Cli::try_parse_from(["halo-cli", "subscribe", "abc"]).unwrap();
+        assert!(matches!(
+            subscribe.command,
+            Commands::Subscribe { ticket } if ticket == "abc"
+        ));
 
+        let inspect = Cli::try_parse_from(["halo-cli", "inspect", "abc"]).unwrap();
+        assert!(matches!(
+            inspect.command,
+            Commands::Inspect { ticket } if ticket == "abc"
+        ));
+    }
+
+    #[test]
+    fn formats_decoded_ipv4_and_ipv6_tickets() {
+        let node_id = [7u8; 32];
+        let expected_node_id = base32::encode(Alphabet::Z, &node_id);
+
+        let v4_ticket = encode_ticket(&node_id, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)));
+        let decoded_v4 = decode_ticket(&v4_ticket).unwrap();
+        assert_eq!(
+            format_ticket(&decoded_v4),
+            format!("Version: 1\nNode ID: {expected_node_id}\nIP Address: 192.168.1.20")
+        );
+
+        let v6_ticket = encode_ticket(&node_id, IpAddr::V6(Ipv6Addr::LOCALHOST));
+        let decoded_v6 = decode_ticket(&v6_ticket).unwrap();
+        assert_eq!(
+            format_ticket(&decoded_v6),
+            format!("Version: 1\nNode ID: {expected_node_id}\nIP Address: ::1")
+        );
+    }
+}
