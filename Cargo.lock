@@ -838,12 +838,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "halo"
+name = "halo-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base32",
+ "clap",
+ "halod",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "halod"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "base32",
  "bytes",
+ "clap",
  "ed25519-dalek",
  "local-ip-address",
  "moq-native-ietf",
@@ -851,25 +865,16 @@ dependencies = [
  "moq-sub",
  "moq-transport",
  "mp4",
+ "quinn",
  "rand 0.8.8",
  "rcgen",
+ "rustls",
+ "rustls-pki-types",
  "tempfile",
  "tokio",
  "tracing",
- "url",
-]
-
-[[package]]
-name = "halo-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base32",
- "clap",
- "halo",
- "tokio",
- "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

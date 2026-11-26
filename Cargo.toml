@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.104"
 base32 = "0.5.1"
 clap = { version = "4.6.7", features = ["derive"] }
-halo = { path = "../halo" }
+halo = { package = "halod", path = "../halod" }
 tokio = { version = "1.54.1", features = ["io-std", "macros", "rt-multi-thread", "signal"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

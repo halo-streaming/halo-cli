@@ -2,6 +2,7 @@ use anyhow::Result;
 use base32::Alphabet;
 use clap::{Parser, Subcommand};
 use halo::{Keypair, Publisher, Ticket, decode_ticket, parse_ticket, subscribe};
+use std::net::SocketAddr;
 use tracing::{Level, event};
 use tracing_subscriber::EnvFilter;
 
@@ -15,10 +16,20 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Publish a video from a file, using MoQ
-    Publish { video_path: String },
+    Publish {
+        video_path: String,
+        /// Optional external discovery server address (e.g. [2001:db8::1]:4444)
+        #[arg(long)]
+        discovery: Option<SocketAddr>,
+    },
 
     /// Subscribe to a MoQ stream using a ticket
-    Subscribe { ticket: String },
+    Subscribe {
+        ticket: String,
+        /// Optional external discovery server address (e.g. [2001:db8::1]:4444)
+        #[arg(long)]
+        discovery: Option<SocketAddr>,
+    },
 
     /// Decode and inspect a HALO join ticket
     Inspect { ticket: String },
@@ -54,21 +65,24 @@ async fn main() -> Result<()> {
     event!(Level::INFO, "pubkey for this node is {keypair}");
 
     match cli.command {
-        Commands::Publish { video_path } => {
+        Commands::Publish {
+            video_path,
+            discovery,
+        } => {
             eprintln!("Publishing {video_path}");
-            let publisher = Publisher::bind(&video_path, keypair.node_id())?;
+            let publisher = Publisher::bind(&video_path, keypair.node_id(), discovery).await?;
             eprintln!("Publisher ticket: {}", publisher.ticket());
             tokio::select! {
                 res = publisher.run() => res?,
                 _ = tokio::signal::ctrl_c() => {}
             }
         }
-        Commands::Subscribe { ticket } => {
+        Commands::Subscribe { ticket, discovery } => {
             // Printing anything to stdout can corrupt the pipe to ffplay
             eprintln!("Subscribing to {ticket}");
             let addr = parse_ticket(&ticket)?;
             tokio::select! {
-                res = subscribe(addr, tokio::io::stdout()) => res?,
+                res = subscribe(addr, tokio::io::stdout(), discovery) => res?,
                 _ = tokio::signal::ctrl_c() => {}
             }
         }
@@ -89,13 +103,27 @@ mod tests {
         let publish = Cli::try_parse_from(["halo-cli", "publish", "video.mp4"]).unwrap();
         assert!(matches!(
             publish.command,
-            Commands::Publish { video_path } if video_path == "video.mp4"
+            Commands::Publish { video_path, discovery: None } if video_path == "video.mp4"
+        ));
+
+        let publish_disc = Cli::try_parse_from([
+            "halo-cli",
+            "publish",
+            "video.mp4",
+            "--discovery",
+            "[::1]:4444",
+        ])
+        .unwrap();
+        assert!(matches!(
+            publish_disc.command,
+            Commands::Publish { video_path, discovery: Some(addr) }
+                if video_path == "video.mp4" && addr == "[::1]:4444".parse::<SocketAddr>().unwrap()
         ));
 
         let subscribe = Cli::try_parse_from(["halo-cli", "subscribe", "abc"]).unwrap();
         assert!(matches!(
             subscribe.command,
-            Commands::Subscribe { ticket } if ticket == "abc"
+            Commands::Subscribe { ticket, discovery: None } if ticket == "abc"
         ));
 
         let inspect = Cli::try_parse_from(["halo-cli", "inspect", "abc"]).unwrap();
